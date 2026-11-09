@@ -1,0 +1,7 @@
+{
+  "name": "CartLens - Automated Shopping & Expense Tracker",
+  "description": "Zero-effort shopping tracker that automatically syncs bank payments, extracts digital receipts, and categorizes purchases across clothes, tops, shoes, electronics, and accessories with real-time cost calculation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
