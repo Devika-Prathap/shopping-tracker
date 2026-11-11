@@ -364,6 +364,7 @@ function ShoppingAppContent() {
             <DashboardView
               purchases={regularPurchases}
               monthlyBudget={monthlyBudget}
+              budgets={budgets}
               onNavigateTab={setActiveTab}
               priceDrops={priceDrops}
               savingsRecommendations={savingsRecommendations}
@@ -374,6 +375,7 @@ function ShoppingAppContent() {
               onOpenMonthlySummary={() => setShowMonthlySummary(true)}
               onAddPurchase={handleAddPurchase}
               onUpdatePurchase={handleUpdatePurchase}
+              onUpdateBudget={handleUpdateCategoryBudget}
               onSelectProduct={(item, tx) => setSelectedProductDetails({ item, transaction: tx })}
               onRestoreDemo={handleRestoreDemoData}
               onOpenNotifications={() => setIsNotificationsOpen(true)}

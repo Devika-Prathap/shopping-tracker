@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { 
   ArrowRight, 
   Lightbulb, 
@@ -11,10 +11,18 @@ import {
   ChevronLeft, 
   ChevronRight, 
   Calendar,
-  Target
+  Target,
+  GripVertical,
+  Eye,
+  EyeOff,
+  ArrowUp,
+  ArrowDown,
+  Check,
+  X,
+  ChevronDown
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { PurchaseTransaction, PurchaseItem, PriceDropItem, CheaperAlternative } from '../types';
+import { PurchaseTransaction, PurchaseItem, PriceDropItem, CheaperAlternative, CategoryBudget, ProductCategory } from '../types';
 import { QuickAddPurchaseModal } from './QuickAddPurchaseModal';
 import { ReceiptCameraScannerModal } from './ReceiptCameraScannerModal';
 import { DashboardCustomizerModal, DEFAULT_DASHBOARD_CARDS, DashboardCardConfig } from './DashboardCustomizerModal';
@@ -23,10 +31,13 @@ import { NoPurchasesEmptyState } from './SkeletonAndEmptyStates';
 import { RadialGoalProgressBar } from './RadialGoalProgressBar';
 import { QuickActionsBar } from './QuickActionsBar';
 import { RecentlyViewedSection } from './RecentlyViewedSection';
+import { BudgetProgressWidget } from './BudgetProgressWidget';
+import { SpendingSparklineWidget } from './SpendingSparklineWidget';
 
 interface DashboardViewProps {
   purchases: PurchaseTransaction[];
   monthlyBudget?: number;
+  budgets?: CategoryBudget[];
   onNavigateTab: (tab: any) => void;
   priceDrops?: PriceDropItem[];
   savingsRecommendations?: CheaperAlternative[];
@@ -34,6 +45,7 @@ interface DashboardViewProps {
   onOpenMonthlySummary?: () => void;
   onAddPurchase?: (purchase: PurchaseTransaction) => void;
   onUpdatePurchase?: (purchase: PurchaseTransaction) => void;
+  onUpdateBudget?: (category: ProductCategory, limit: number) => void;
   onSelectProduct?: (item: PurchaseItem, transaction?: PurchaseTransaction) => void;
   onRestoreDemo?: () => void;
   onOpenNotifications?: () => void;
@@ -43,9 +55,12 @@ interface DashboardViewProps {
 export const DashboardView: React.FC<DashboardViewProps> = ({
   purchases,
   monthlyBudget = 15000,
+  budgets,
   onNavigateTab,
   onOpenStoreModal,
   onAddPurchase,
+  onUpdatePurchase,
+  onUpdateBudget,
   onSelectProduct,
   onRestoreDemo,
 }) => {
@@ -74,7 +89,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const saved = localStorage.getItem('cartlens_dashboard_cards_v4');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length === DEFAULT_DASHBOARD_CARDS.length) {
+        if (Array.isArray(parsed)) {
+          const existingIds = new Set(parsed.map((c: any) => c.id));
+          const missingDefaults = DEFAULT_DASHBOARD_CARDS.filter((c) => !existingIds.has(c.id));
+          if (missingDefaults.length > 0) {
+            const merged = [...parsed, ...missingDefaults].map((c, i) => ({ ...c, order: i }));
+            try {
+              localStorage.setItem('cartlens_dashboard_cards_v4', JSON.stringify(merged));
+            } catch {}
+            return merged;
+          }
           return parsed;
         }
       }
@@ -95,6 +119,136 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       localStorage.setItem('cartlens_dashboard_cards_v4', JSON.stringify(DEFAULT_DASHBOARD_CARDS));
     } catch {}
   };
+
+  const [isVisibilityMenuOpen, setIsVisibilityMenuOpen] = useState(false);
+  const [isArrangeMode, setIsArrangeMode] = useState(false);
+  const customizerMenuRef = useRef<HTMLDivElement>(null);
+
+  // Drag and drop states on dashboard
+  const [draggedDashboardCardId, setDraggedDashboardCardId] = useState<string | null>(null);
+  const [dragOverDashboardCardId, setDragOverDashboardCardId] = useState<string | null>(null);
+
+  // Drag and drop states inside the popover menu
+  const [menuDraggedIdx, setMenuDraggedIdx] = useState<number | null>(null);
+
+  // Close visibility menu on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (customizerMenuRef.current && !customizerMenuRef.current.contains(e.target as Node)) {
+        setIsVisibilityMenuOpen(false);
+      }
+    };
+    if (isVisibilityMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isVisibilityMenuOpen]);
+
+  // Toggle card visibility
+  const handleToggleCardVisibility = (cardId: string) => {
+    const updated = dashboardCards.map((c) =>
+      c.id === cardId ? { ...c, visible: !c.visible } : c
+    );
+    handleSaveDashboardCards(updated);
+  };
+
+  // Move card up or down
+  const handleMoveCard = (cardId: string, direction: 'up' | 'down') => {
+    const sorted = [...dashboardCards].sort((a, b) => a.order - b.order);
+    const idx = sorted.findIndex((c) => c.id === cardId);
+    if (idx === -1) return;
+    if (direction === 'up' && idx > 0) {
+      const temp = sorted[idx - 1];
+      sorted[idx - 1] = sorted[idx];
+      sorted[idx] = temp;
+    } else if (direction === 'down' && idx < sorted.length - 1) {
+      const temp = sorted[idx + 1];
+      sorted[idx + 1] = sorted[idx];
+      sorted[idx] = temp;
+    } else {
+      return;
+    }
+    const updated = sorted.map((c, i) => ({ ...c, order: i }));
+    handleSaveDashboardCards(updated);
+  };
+
+  // Dashboard Drag-and-drop handlers
+  const handleDashboardDragStart = (e: React.DragEvent, cardId: string) => {
+    setDraggedDashboardCardId(cardId);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', cardId);
+  };
+
+  const handleDashboardDragOver = (e: React.DragEvent, targetCardId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedDashboardCardId && draggedDashboardCardId !== targetCardId) {
+      setDragOverDashboardCardId(targetCardId);
+    }
+  };
+
+  const handleDashboardDragLeave = () => {
+    setDragOverDashboardCardId(null);
+  };
+
+  const handleDashboardDrop = (e: React.DragEvent, targetCardId: string) => {
+    e.preventDefault();
+    if (!draggedDashboardCardId || draggedDashboardCardId === targetCardId) {
+      setDraggedDashboardCardId(null);
+      setDragOverDashboardCardId(null);
+      return;
+    }
+
+    const sorted = [...dashboardCards].sort((a, b) => a.order - b.order);
+    const sourceIdx = sorted.findIndex((c) => c.id === draggedDashboardCardId);
+    const targetIdx = sorted.findIndex((c) => c.id === targetCardId);
+
+    if (sourceIdx !== -1 && targetIdx !== -1) {
+      const [moved] = sorted.splice(sourceIdx, 1);
+      sorted.splice(targetIdx, 0, moved);
+      const updated = sorted.map((c, i) => ({ ...c, order: i }));
+      handleSaveDashboardCards(updated);
+    }
+
+    setDraggedDashboardCardId(null);
+    setDragOverDashboardCardId(null);
+  };
+
+  const handleDashboardDragEnd = () => {
+    setDraggedDashboardCardId(null);
+    setDragOverDashboardCardId(null);
+  };
+
+  // Popover menu drag-and-drop handlers
+  const handleMenuDragStart = (idx: number) => {
+    setMenuDraggedIdx(idx);
+  };
+
+  const handleMenuDragOver = (e: React.DragEvent, targetIdx: number) => {
+    e.preventDefault();
+    if (menuDraggedIdx === null || menuDraggedIdx === targetIdx) return;
+    const sorted = [...dashboardCards].sort((a, b) => a.order - b.order);
+    const [moved] = sorted.splice(menuDraggedIdx, 1);
+    sorted.splice(targetIdx, 0, moved);
+    const updated = sorted.map((c, i) => ({ ...c, order: i }));
+    setMenuDraggedIdx(targetIdx);
+    handleSaveDashboardCards(updated);
+  };
+
+  const handleMenuDragEnd = () => {
+    setMenuDraggedIdx(null);
+  };
+
+  // Sorted cards by order
+  const sortedCards = useMemo(() => {
+    return [...dashboardCards].sort((a, b) => a.order - b.order);
+  }, [dashboardCards]);
+
+  const sortedVisibleCards = useMemo(() => {
+    return [...dashboardCards]
+      .filter((c) => c.visible)
+      .sort((a, b) => a.order - b.order);
+  }, [dashboardCards]);
 
   // Card visibility map
   const cardVisibility = useMemo(() => {
@@ -409,14 +563,357 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setSelectedProductItem({ item, transaction: parentTx });
   };
 
-  // Visibility flags
-  const showQuickActions = cardVisibility['quick_actions'] !== false;
-  const showTotalSpending = cardVisibility['total_spending'] !== false;
-  const showRecentPurchases = cardVisibility['recent_purchases'] !== false;
-  const showRecentlyViewed = cardVisibility['recently_viewed'] !== false;
-  const showCategorySpending = cardVisibility['category_spending'] !== false;
-  const showTopStores = cardVisibility['top_stores'] !== false;
-  const showSmartInsight = cardVisibility['smart_insight'] !== false;
+  // Dynamic Widget Renderer based on user's customized layout order
+  const renderWidgetContent = (cardId: string) => {
+    switch (cardId) {
+      case 'quick_actions':
+        return (
+          <QuickActionsBar onNavigateTab={onNavigateTab} />
+        );
+
+      case 'total_spending':
+        return (
+          <section className="bg-gradient-to-br from-[#F3EEFF] via-[#FAF6FF] to-[#FFF9F2] dark:from-[#131A2B] dark:via-purple-950/40 dark:to-[#131A2B] border border-[#E5DDF2] dark:border-purple-900/50 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
+            <RadialGoalProgressBar
+              goalType={activeGoalType}
+              onGoalTypeChange={handleGoalTypeChange}
+              spentAmount={totalSpentMonth}
+              spendingLimit={currentSpendingBudget}
+              onUpdateSpendingLimit={handleUpdateSpendingLimit}
+              savingsAchieved={totalSavingsAchieved}
+              savingsTarget={savingsTarget}
+              onUpdateSavingsTarget={handleUpdateSavingsTarget}
+              monthName={selectedMonth}
+              comparisonPercent={comparisonPercent}
+            />
+          </section>
+        );
+
+      case 'spending_sparkline':
+        return (
+          <SpendingSparklineWidget
+            purchases={validPurchases}
+            onNavigateTab={onNavigateTab}
+          />
+        );
+
+      case 'recent_purchases':
+        return (
+          <section className="bg-white dark:bg-[#131A2B] border border-[#E5DDF2] dark:border-slate-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
+            <div>
+              <div className="flex items-center justify-between mb-3 min-w-0">
+                <div>
+                  <h2 className="text-sm sm:text-base font-extrabold text-[#4C267B] dark:text-white truncate">
+                    Recent Purchases
+                  </h2>
+                  <p className="text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
+                    5 most recent verified orders
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => onNavigateTab('purchases')}
+                  aria-label="View all purchases"
+                  className="group inline-flex items-center gap-1 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] transition-colors cursor-pointer shrink-0"
+                >
+                  <span>View All</span>
+                  <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              </div>
+
+              {recentPurchases.length === 0 ? (
+                <div className="py-6 text-center text-xs text-[#625B72]">
+                  No recent purchases found.
+                </div>
+              ) : (
+                <div className="divide-y divide-[#E5DDF2] dark:divide-slate-800/60 min-w-0">
+                  {recentPurchases.map((p) => (
+                    <div
+                      key={p.id}
+                      onClick={() => handleProductClick(p.rawItem, p.parentTransaction)}
+                      className="py-2 flex items-center justify-between gap-2.5 group hover:bg-[#F8F5FD] dark:hover:bg-slate-800/40 rounded-xl px-1.5 -mx-1.5 transition-colors cursor-pointer min-w-0"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div className="w-9 h-9 rounded-lg bg-[#F8F5FD] dark:bg-slate-800 border border-[#E5DDF2] dark:border-slate-700 flex items-center justify-center overflow-hidden shrink-0">
+                          {p.imageUrl ? (
+                            <img
+                              src={p.imageUrl}
+                              alt={p.name}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                              loading="lazy"
+                              onError={(e) => {
+                                (e.target as HTMLElement).style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <span className="text-base">🛍️</span>
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-xs font-bold text-[#1E1B2E] dark:text-white truncate group-hover:text-[#7C3AED] dark:group-hover:text-purple-400 transition-colors">
+                            {p.name}
+                          </h3>
+                          <div className="flex items-center gap-1.5 text-[11px] text-[#625B72] dark:text-slate-400 mt-0.5 truncate">
+                            <span className="font-semibold text-[#4C267B] dark:text-slate-300">
+                              {p.store}
+                            </span>
+                            <span>·</span>
+                            <span>{p.relativeDate}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <span className="text-xs font-extrabold font-mono text-[#1E1B2E] dark:text-white tabular-nums block">
+                          {formatPrice(p.price)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-2.5 mt-2 border-t border-[#E5DDF2] dark:border-slate-800 flex items-center justify-between text-[11px] text-[#625B72] dark:text-slate-400">
+              <span>Showing 5 latest orders</span>
+              <button
+                onClick={() => onNavigateTab('purchases')}
+                className="font-bold text-[#7C3AED] dark:text-purple-400 hover:underline cursor-pointer"
+              >
+                View full ledger →
+              </button>
+            </div>
+          </section>
+        );
+
+      case 'recently_viewed':
+        return (
+          <RecentlyViewedSection
+            onSelectProduct={(item: PurchaseItem) => {
+              setSelectedProductItem({ item });
+              if (onSelectProduct) onSelectProduct(item);
+            }}
+            onNavigateTab={onNavigateTab}
+          />
+        );
+
+      case 'budget_progress':
+        return (
+          <BudgetProgressWidget
+            purchases={validPurchases}
+            budgets={budgets}
+            onNavigateTab={onNavigateTab}
+            onUpdateBudget={onUpdateBudget}
+            selectedMonth={selectedMonth}
+          />
+        );
+
+      case 'category_spending':
+        return (
+          <section className="bg-white dark:bg-[#131A2B] border border-[#E5DDF2] dark:border-slate-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
+            <div>
+              <div className="flex items-center justify-between mb-3 min-w-0">
+                <div>
+                  <h2 className="text-sm sm:text-base font-extrabold text-[#4C267B] dark:text-white truncate">
+                    Spending by Category
+                  </h2>
+                  <p className="text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
+                    Breakdown across 5 core categories
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => onNavigateTab('analytics')}
+                  aria-label="View category analytics"
+                  className="group inline-flex items-center gap-1 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] transition-colors cursor-pointer shrink-0"
+                >
+                  <span>View Analytics</span>
+                  <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              </div>
+
+              {/* Proportional Segmented Progress Bar */}
+              <div className="mb-3">
+                <div className="w-full h-2.5 rounded-full overflow-hidden flex bg-[#F3EEFF] dark:bg-slate-800 border border-[#E5DDF2] dark:border-transparent">
+                  {categorySpending.map((cat) => (
+                    <div
+                      key={cat.id}
+                      className={`h-full ${cat.barColor} transition-all`}
+                      style={{ width: `${cat.percent}%` }}
+                      title={`${cat.name}: ${formatPrice(cat.amount)} (${cat.percent}%)`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* 5 Categories List */}
+              <div className="space-y-1.5 min-w-0">
+                {categorySpending.map((cat) => (
+                  <div
+                    key={cat.id}
+                    onClick={() => onNavigateTab('analytics')}
+                    className="flex items-center justify-between gap-2.5 text-xs p-1.5 rounded-xl hover:bg-[#F8F5FD] dark:hover:bg-slate-800/40 cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm shrink-0">{cat.emoji}</span>
+                      <span className="font-bold text-[#1E1B2E] dark:text-slate-200 truncate">
+                        {cat.name}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2.5 shrink-0">
+                      <span className="text-[11px] text-[#625B72] dark:text-slate-400 font-mono font-medium">
+                        {cat.percent}%
+                      </span>
+                      <span className="font-bold font-mono text-[#4C267B] dark:text-white tabular-nums">
+                        {formatPrice(cat.amount)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2.5 mt-2 border-t border-[#E5DDF2] dark:border-slate-800 flex items-center justify-between text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
+              <span>Total categorized spend</span>
+              <span className="font-extrabold font-mono text-[#4C267B] dark:text-slate-200">
+                {formatPrice(totalCategoryAmount)}
+              </span>
+            </div>
+          </section>
+        );
+
+      case 'top_stores':
+        return (
+          <section className="bg-white dark:bg-[#131A2B] border border-[#E5DDF2] dark:border-slate-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
+            <div>
+              <div className="flex items-center justify-between mb-3 min-w-0">
+                <div>
+                  <h2 className="text-sm sm:text-base font-extrabold text-[#4C267B] dark:text-white truncate">
+                    Top Stores
+                  </h2>
+                  <p className="text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
+                    Only the 3 most-used shopping websites
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => onNavigateTab('stores')}
+                  aria-label="View all stores"
+                  className="group inline-flex items-center gap-1 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] transition-colors cursor-pointer shrink-0"
+                >
+                  <span>View All Stores</span>
+                  <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              </div>
+
+              {/* 3 Store Cards with Soft Pastel Styling */}
+              <div className="space-y-2 min-w-0">
+                {topStores.map((st, idx) => (
+                  <div
+                    key={st.name}
+                    onClick={() => {
+                      if (onOpenStoreModal) {
+                        onOpenStoreModal(st.name);
+                      } else {
+                        onNavigateTab('stores');
+                      }
+                    }}
+                    className="p-3 rounded-xl bg-[#F8F5FD] dark:bg-slate-800/40 border border-[#E5DDF2] dark:border-slate-800 hover:border-[#8B5CF6]/60 dark:hover:border-purple-700 transition-all cursor-pointer group flex flex-col justify-between min-w-0 shadow-2xs"
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-lg shrink-0">{st.logoEmoji}</span>
+                        <div className="min-w-0">
+                          <h3 className="text-xs sm:text-sm font-extrabold text-[#1E1B2E] dark:text-white truncate group-hover:text-[#7C3AED] dark:group-hover:text-purple-400 transition-colors">
+                            {st.name}
+                          </h3>
+                          <span className="text-[10px] text-[#625B72] dark:text-slate-400 font-bold">
+                            Rank #{idx + 1}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <span className="text-xs font-extrabold font-mono text-[#1E1B2E] dark:text-white tabular-nums block">
+                          {formatPrice(st.spent)}
+                        </span>
+                        <span className="text-[10px] text-[#625B72] dark:text-slate-400 font-semibold">
+                          {st.purchasesCount} orders
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Progress Volume Bar */}
+                    <div className="w-full h-1.5 rounded-full bg-[#E5DDF2] dark:bg-slate-700 overflow-hidden">
+                      <div
+                        className={`h-full ${st.colorClass} rounded-full`}
+                        style={{ width: `${st.barPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2.5 mt-2 border-t border-[#E5DDF2] dark:border-slate-800 flex items-center justify-between text-[11px] text-[#625B72] dark:text-slate-400">
+              <span>Store policy & price tracking</span>
+              <button
+                onClick={() => onNavigateTab('stores')}
+                className="font-bold text-[#7C3AED] dark:text-purple-400 hover:underline cursor-pointer"
+              >
+                Compare stores →
+              </button>
+            </div>
+          </section>
+        );
+
+      case 'smart_insight':
+        return (
+          <section className="bg-gradient-to-r from-[#FFF6ED] via-[#FFF9F2] to-[#FFF0E1] dark:from-[#131A2B] dark:via-amber-950/20 dark:to-[#131A2B] border border-[#FDBA74]/60 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 min-w-0">
+            <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-[#FFF0E1] dark:bg-amber-950/60 text-[#EA580C] dark:text-amber-400 border border-[#FDBA74]/40 flex items-center justify-center shrink-0 shadow-2xs">
+                <Lightbulb className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-[#C2410C] dark:text-amber-400 uppercase font-bold tracking-wider">
+                    {currentInsight.badge}
+                  </span>
+                  <span className="text-[10px] text-[#625B72] dark:text-slate-400 font-semibold">
+                    · Showing {currentInsightIndex + 1} of {smartInsights.length}
+                  </span>
+                </div>
+                <h3 className="text-sm font-bold text-[#1E1B2E] dark:text-white">
+                  {currentInsight.title}
+                </h3>
+                <p className="text-xs text-[#625B72] dark:text-slate-300">
+                  {currentInsight.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-[#FFF0E1] dark:bg-amber-950/50 border border-[#FDBA74]/40 text-xs font-bold text-[#C2410C] dark:text-amber-300 shadow-2xs">
+                {currentInsight.highlight}
+              </span>
+              <button
+                onClick={handleNextInsight}
+                aria-label="Next insight"
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] dark:hover:text-purple-300 cursor-pointer px-3 py-1.5 rounded-xl bg-white dark:bg-purple-950/40 hover:bg-[#F3EEFF] border border-[#E5DDF2] dark:border-transparent transition-colors shadow-2xs"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Next Insight</span>
+              </button>
+            </div>
+          </section>
+        );
+
+      default:
+        return null;
+    }
+  };
 
   return (
     <div className="w-full max-w-5xl xl:max-w-6xl mx-auto space-y-5 animate-fadeIn pb-12 min-w-0">
@@ -466,18 +963,171 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
           </div>
 
-          {/* Customize Button */}
-          <button
-            onClick={() => setIsCustomizerOpen(true)}
-            aria-label="Customize dashboard cards"
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-[#F3EEFF] hover:bg-[#EBDFFD] text-[#4C267B] border border-[#E5DDF2] dark:bg-purple-950/50 dark:hover:bg-purple-900/50 dark:text-purple-300 dark:border-purple-800/60 text-xs font-bold transition-colors cursor-pointer shadow-2xs"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5 text-[#8B5CF6]" />
-            <span className="hidden md:inline">Customize</span>
-            <span className="px-1 py-0.2 rounded-full bg-[#8B5CF6] text-white text-[9px] font-extrabold">
-              {visibleCardsCount}/{dashboardCards.length}
-            </span>
-          </button>
+          {/* Customize Widgets Button & Quick Dropdown Menu */}
+          <div className="relative" ref={customizerMenuRef}>
+            <button
+              onClick={() => setIsVisibilityMenuOpen(prev => !prev)}
+              aria-label="Customize dashboard cards and widgets"
+              aria-expanded={isVisibilityMenuOpen}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shadow-2xs ${
+                isVisibilityMenuOpen || isArrangeMode
+                  ? 'bg-[#8B5CF6] text-white border-[#8B5CF6] shadow-xs'
+                  : 'bg-[#F3EEFF] hover:bg-[#EBDFFD] text-[#4C267B] border-[#E5DDF2] dark:bg-purple-950/50 dark:hover:bg-purple-900/50 dark:text-purple-300 dark:border-purple-800/60'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Customize</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-extrabold ${
+                isVisibilityMenuOpen || isArrangeMode ? 'bg-white/20 text-white' : 'bg-[#8B5CF6] text-white'
+              }`}>
+                {visibleCardsCount}/{dashboardCards.length}
+              </span>
+              <ChevronDown className={`w-3 h-3 transition-transform ${isVisibilityMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Quick 'Toggle Visibility' & Reorder Popover Menu */}
+            {isVisibilityMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white dark:bg-[#131A2B] border border-[#E5DDF2] dark:border-slate-800 rounded-2xl shadow-2xl z-50 p-3.5 space-y-3 animate-fadeIn">
+                <div className="flex items-center justify-between pb-2.5 border-b border-[#E5DDF2] dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <SlidersHorizontal className="w-4 h-4 text-[#8B5CF6]" />
+                    <span className="text-xs font-bold text-[#1E1B2E] dark:text-white">Dashboard Widgets</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#F3EEFF] text-[#7C3AED] dark:bg-purple-950 dark:text-purple-300">
+                      {visibleCardsCount} of {dashboardCards.length} visible
+                    </span>
+                    <button 
+                      onClick={() => setIsVisibilityMenuOpen(false)}
+                      className="p-1 rounded-lg text-[#625B72] hover:text-[#1E1B2E] dark:hover:text-white cursor-pointer"
+                      title="Close menu"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* On-Dashboard Rearrange Mode Toggle */}
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#F8F5FD] dark:bg-[#0E1422] border border-[#E5DDF2]/80 dark:border-slate-800">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <GripVertical className="w-4 h-4 text-[#8B5CF6] shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-[#1E1B2E] dark:text-white truncate">
+                        On-Dashboard Drag & Drop
+                      </div>
+                      <div className="text-[10px] text-[#625B72] dark:text-slate-400 truncate">
+                        Rearrange cards directly on your screen
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setIsArrangeMode(prev => !prev);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer shrink-0 ${
+                      isArrangeMode 
+                        ? 'bg-[#8B5CF6] text-white shadow-xs' 
+                        : 'bg-white dark:bg-slate-800 border border-[#E5DDF2] dark:border-slate-700 text-[#4C267B] dark:text-slate-300 hover:bg-[#F3EEFF]'
+                    }`}
+                  >
+                    {isArrangeMode ? 'Active' : 'Enable'}
+                  </button>
+                </div>
+
+                {/* Draggable & Toggleable Widget List */}
+                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-0.5 scrollbar-thin">
+                  {sortedCards.map((card, idx) => (
+                    <div
+                      key={card.id}
+                      draggable
+                      onDragStart={() => handleMenuDragStart(idx)}
+                      onDragOver={(e) => handleMenuDragOver(e, idx)}
+                      onDragEnd={handleMenuDragEnd}
+                      className={`flex items-center justify-between p-2 rounded-xl border transition-all ${
+                        menuDraggedIdx === idx
+                          ? 'opacity-40 border-[#8B5CF6] bg-purple-50 dark:bg-purple-950/30'
+                          : card.visible
+                          ? 'bg-white dark:bg-[#131A2B] border-[#E5DDF2] dark:border-slate-800 shadow-2xs'
+                          : 'bg-[#F8F5FD]/60 dark:bg-slate-900/60 border-dashed border-[#E5DDF2] dark:border-slate-800/80 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <div 
+                          className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-[#8B5CF6] transition-colors p-0.5 shrink-0"
+                          title="Drag to rearrange"
+                        >
+                          <GripVertical className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold text-[#1E1B2E] dark:text-white truncate">
+                            {card.title}
+                          </div>
+                          <span className="text-[9px] text-[#625B72] dark:text-slate-400 font-medium">
+                            {card.category}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleMoveCard(card.id, 'up')}
+                          disabled={idx === 0}
+                          className="p-1 rounded-md hover:bg-[#F3EEFF] dark:hover:bg-slate-800 text-[#625B72] hover:text-[#1E1B2E] dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                          title="Move up"
+                        >
+                          <ArrowUp className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => handleMoveCard(card.id, 'down')}
+                          disabled={idx === sortedCards.length - 1}
+                          className="p-1 rounded-md hover:bg-[#F3EEFF] dark:hover:bg-slate-800 text-[#625B72] hover:text-[#1E1B2E] dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                          title="Move down"
+                        >
+                          <ArrowDown className="w-3 h-3" />
+                        </button>
+
+                        <button
+                          onClick={() => handleToggleCardVisibility(card.id)}
+                          className={`p-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all flex items-center gap-1 ${
+                            card.visible
+                              ? 'bg-[#F3EEFF] text-[#7C3AED] dark:bg-purple-950 dark:text-purple-300'
+                              : 'bg-slate-100 dark:bg-slate-800 text-[#625B72] dark:text-slate-400'
+                          }`}
+                          title={card.visible ? 'Hide widget' : 'Show widget'}
+                        >
+                          {card.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                          <span className="text-[10px] hidden sm:inline">
+                            {card.visible ? 'Shown' : 'Hidden'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Footer buttons */}
+                <div className="pt-2 border-t border-[#E5DDF2] dark:border-slate-800 flex items-center justify-between text-xs">
+                  <button
+                    onClick={handleResetDashboardCards}
+                    className="text-[11px] font-semibold text-[#625B72] hover:text-[#7C3AED] dark:hover:text-purple-300 flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset Layout</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsVisibilityMenuOpen(false);
+                      setIsCustomizerOpen(true);
+                    }}
+                    className="text-[11px] font-bold text-[#7C3AED] dark:text-purple-400 hover:underline cursor-pointer"
+                  >
+                    Full Customizer Modal →
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Scan Receipt Button */}
           <button
@@ -538,347 +1188,114 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       ) : (
         <div className="space-y-5">
-          {/* QUICK ACTIONS BAR (Configurable shortcut strip) */}
-          {showQuickActions && (
-            <QuickActionsBar
-              onNavigateTab={onNavigateTab}
-            />
-          )}
-
-          {/* ========================================================================= */}
-          {/* ROW 1: BALANCED 2-COLUMN LAYOUT (Total Spending & Recent Purchases)        */}
-          {/* ========================================================================= */}
-          {(showTotalSpending || showRecentPurchases) && (
-            <div className={`grid grid-cols-1 ${showTotalSpending && showRecentPurchases ? 'lg:grid-cols-2' : ''} gap-5 items-stretch w-full min-w-0`}>
-              
-              {/* CARD 1: TOTAL SPENDING & RADIAL GOAL PROGRESS BAR */}
-              {showTotalSpending && (
-                <section className="bg-gradient-to-br from-[#F3EEFF] via-[#FAF6FF] to-[#FFF9F2] dark:from-[#131A2B] dark:via-purple-950/40 dark:to-[#131A2B] border border-[#E5DDF2] dark:border-purple-900/50 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
-                  <RadialGoalProgressBar
-                    goalType={activeGoalType}
-                    onGoalTypeChange={handleGoalTypeChange}
-                    spentAmount={totalSpentMonth}
-                    spendingLimit={currentSpendingBudget}
-                    onUpdateSpendingLimit={handleUpdateSpendingLimit}
-                    savingsAchieved={totalSavingsAchieved}
-                    savingsTarget={savingsTarget}
-                    onUpdateSavingsTarget={handleUpdateSavingsTarget}
-                    monthName={selectedMonth}
-                    comparisonPercent={comparisonPercent}
-                  />
-                </section>
-              )}
-
-              {/* CARD 2: RECENT PURCHASES (Fitting 100% inside card with zero overflow) */}
-              {showRecentPurchases && (
-                <section className="bg-white dark:bg-[#131A2B] border border-[#E5DDF2] dark:border-slate-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
-                  <div>
-                    <div className="flex items-center justify-between mb-3 min-w-0">
-                      <div>
-                        <h2 className="text-sm sm:text-base font-extrabold text-[#4C267B] dark:text-white truncate">
-                          Recent Purchases
-                        </h2>
-                        <p className="text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
-                          5 most recent verified orders
-                        </p>
-                      </div>
-
-                      <button
-                        onClick={() => onNavigateTab('purchases')}
-                        aria-label="View all purchases"
-                        className="group inline-flex items-center gap-1 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] transition-colors cursor-pointer shrink-0"
-                      >
-                        <span>View All</span>
-                        <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
-                      </button>
-                    </div>
-
-                    {recentPurchases.length === 0 ? (
-                      <div className="py-6 text-center text-xs text-[#625B72]">
-                        No recent purchases found.
-                      </div>
-                    ) : (
-                      <div className="divide-y divide-[#E5DDF2] dark:divide-slate-800/60 min-w-0">
-                        {recentPurchases.map((p) => (
-                          <div
-                            key={p.id}
-                            onClick={() => handleProductClick(p.rawItem, p.parentTransaction)}
-                            className="py-2 flex items-center justify-between gap-2.5 group hover:bg-[#F8F5FD] dark:hover:bg-slate-800/40 rounded-xl px-1.5 -mx-1.5 transition-colors cursor-pointer min-w-0"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                              <div className="w-9 h-9 rounded-lg bg-[#F8F5FD] dark:bg-slate-800 border border-[#E5DDF2] dark:border-slate-700 flex items-center justify-center overflow-hidden shrink-0">
-                                {p.imageUrl ? (
-                                  <img
-                                    src={p.imageUrl}
-                                    alt={p.name}
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                    loading="lazy"
-                                    onError={(e) => {
-                                      (e.target as HTMLElement).style.display = 'none';
-                                    }}
-                                  />
-                                ) : (
-                                  <span className="text-base">🛍️</span>
-                                )}
-                              </div>
-
-                              <div className="min-w-0 flex-1">
-                                <h3 className="text-xs font-bold text-[#29243A] dark:text-white truncate group-hover:text-[#7C3AED] dark:group-hover:text-purple-400 transition-colors">
-                                  {p.name}
-                                </h3>
-                                <div className="flex items-center gap-1.5 text-[11px] text-[#625B72] dark:text-slate-400 mt-0.5 truncate">
-                                  <span className="font-semibold text-[#4C267B] dark:text-slate-300">
-                                    {p.store}
-                                  </span>
-                                  <span>·</span>
-                                  <span>{p.relativeDate}</span>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="text-right shrink-0">
-                              <span className="text-xs font-extrabold font-mono text-[#29243A] dark:text-white tabular-nums block">
-                                {formatPrice(p.price)}
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="pt-2.5 mt-2 border-t border-[#E5DDF2] dark:border-slate-800 flex items-center justify-between text-[11px] text-[#625B72] dark:text-slate-400">
-                    <span>Showing 5 latest orders</span>
-                    <button
-                      onClick={() => onNavigateTab('purchases')}
-                      className="font-bold text-[#7C3AED] dark:text-purple-400 hover:underline cursor-pointer"
-                    >
-                      View full ledger →
-                    </button>
-                  </div>
-                </section>
-              )}
-            </div>
-          )}
-
-          {/* RECENTLY VIEWED PRODUCTS (Tracks inspected products, strictly excludes private vault) */}
-          {showRecentlyViewed && (
-            <RecentlyViewedSection
-              onSelectProduct={(item: PurchaseItem) => {
-                setSelectedProductItem({ item });
-                if (onSelectProduct) onSelectProduct(item);
-              }}
-              onNavigateTab={onNavigateTab}
-            />
-          )}
-
-          {/* ========================================================================= */}
-          {/* ROW 2: BALANCED 2-COLUMN LAYOUT (Spending by Category & Top Stores)        */}
-          {/* ========================================================================= */}
-          {(showCategorySpending || showTopStores) && (
-            <div className={`grid grid-cols-1 ${showCategorySpending && showTopStores ? 'lg:grid-cols-2' : ''} gap-5 items-stretch w-full min-w-0`}>
-              
-              {/* CARD 3: SPENDING BY CATEGORY */}
-              {showCategorySpending && (
-                <section className="bg-white dark:bg-[#131A2B] border border-[#E5DDF2] dark:border-slate-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
-                  <div>
-                    <div className="flex items-center justify-between mb-3 min-w-0">
-                      <div>
-                        <h2 className="text-sm sm:text-base font-extrabold text-[#4C267B] dark:text-white truncate">
-                          Spending by Category
-                        </h2>
-                        <p className="text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
-                          Breakdown across 5 core categories
-                        </p>
-                      </div>
-
-                      <button
-                        onClick={() => onNavigateTab('analytics')}
-                        aria-label="View category analytics"
-                        className="group inline-flex items-center gap-1 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] transition-colors cursor-pointer shrink-0"
-                      >
-                        <span>View Analytics</span>
-                        <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
-                      </button>
-                    </div>
-
-                    {/* Proportional Segmented Progress Bar */}
-                    <div className="mb-3">
-                      <div className="w-full h-2.5 rounded-full overflow-hidden flex bg-[#F3EEFF] dark:bg-slate-800 border border-[#E5DDF2] dark:border-transparent">
-                        {categorySpending.map((cat) => (
-                          <div
-                            key={cat.id}
-                            className={`h-full ${cat.barColor} transition-all`}
-                            style={{ width: `${cat.percent}%` }}
-                            title={`${cat.name}: ${formatPrice(cat.amount)} (${cat.percent}%)`}
-                          />
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 5 Categories List */}
-                    <div className="space-y-1.5 min-w-0">
-                      {categorySpending.map((cat) => (
-                        <div
-                          key={cat.id}
-                          onClick={() => onNavigateTab('analytics')}
-                          className="flex items-center justify-between gap-2.5 text-xs p-1.5 rounded-xl hover:bg-[#F8F5FD] dark:hover:bg-slate-800/40 cursor-pointer transition-colors"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-sm shrink-0">{cat.emoji}</span>
-                            <span className="font-bold text-[#29243A] dark:text-slate-200 truncate">
-                              {cat.name}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-2.5 shrink-0">
-                            <span className="text-[11px] text-[#625B72] dark:text-slate-400 font-mono font-medium">
-                              {cat.percent}%
-                            </span>
-                            <span className="font-bold font-mono text-[#4C267B] dark:text-white tabular-nums">
-                              {formatPrice(cat.amount)}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="pt-2.5 mt-2 border-t border-[#E5DDF2] dark:border-slate-800 flex items-center justify-between text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
-                    <span>Total categorized spend</span>
-                    <span className="font-extrabold font-mono text-[#4C267B] dark:text-slate-200">
-                      {formatPrice(totalCategoryAmount)}
-                    </span>
-                  </div>
-                </section>
-              )}
-
-              {/* CARD 4: TOP STORES */}
-              {showTopStores && (
-                <section className="bg-white dark:bg-[#131A2B] border border-[#E5DDF2] dark:border-slate-800 rounded-2xl p-5 shadow-xs flex flex-col justify-between h-full min-w-0">
-                  <div>
-                    <div className="flex items-center justify-between mb-3 min-w-0">
-                      <div>
-                        <h2 className="text-sm sm:text-base font-extrabold text-[#4C267B] dark:text-white truncate">
-                          Top Stores
-                        </h2>
-                        <p className="text-[11px] text-[#625B72] dark:text-slate-400 font-medium">
-                          Only the 3 most-used shopping websites
-                        </p>
-                      </div>
-
-                      <button
-                        onClick={() => onNavigateTab('stores')}
-                        aria-label="View all stores"
-                        className="group inline-flex items-center gap-1 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] transition-colors cursor-pointer shrink-0"
-                      >
-                        <span>View All Stores</span>
-                        <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
-                      </button>
-                    </div>
-
-                    {/* 3 Store Cards with Soft Pastel Styling */}
-                    <div className="space-y-2 min-w-0">
-                      {topStores.map((st, idx) => (
-                        <div
-                          key={st.name}
-                          onClick={() => {
-                            if (onOpenStoreModal) {
-                              onOpenStoreModal(st.name);
-                            } else {
-                              onNavigateTab('stores');
-                            }
-                          }}
-                          className="p-3 rounded-xl bg-[#F8F5FD] dark:bg-slate-800/40 border border-[#E5DDF2] dark:border-slate-800 hover:border-[#8B5CF6]/60 dark:hover:border-purple-700 transition-all cursor-pointer group flex flex-col justify-between min-w-0 shadow-2xs"
-                        >
-                          <div className="flex items-center justify-between gap-2 mb-1.5">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className="text-lg shrink-0">{st.logoEmoji}</span>
-                              <div className="min-w-0">
-                                <h3 className="text-xs sm:text-sm font-extrabold text-[#29243A] dark:text-white truncate group-hover:text-[#7C3AED] dark:group-hover:text-purple-400 transition-colors">
-                                  {st.name}
-                                </h3>
-                                <span className="text-[10px] text-[#625B72] dark:text-slate-400 font-bold">
-                                  Rank #{idx + 1}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="text-right shrink-0">
-                              <span className="text-xs font-extrabold font-mono text-[#29243A] dark:text-white tabular-nums block">
-                                {formatPrice(st.spent)}
-                              </span>
-                              <span className="text-[10px] text-[#625B72] dark:text-slate-400 font-semibold">
-                                {st.purchasesCount} orders
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Progress Volume Bar */}
-                          <div className="w-full h-1.5 rounded-full bg-[#E5DDF2] dark:bg-slate-700 overflow-hidden">
-                            <div
-                              className={`h-full ${st.colorClass} rounded-full`}
-                              style={{ width: `${st.barPercent}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="pt-2.5 mt-2 border-t border-[#E5DDF2] dark:border-slate-800 flex items-center justify-between text-[11px] text-[#625B72] dark:text-slate-400">
-                    <span>Store policy & price tracking</span>
-                    <button
-                      onClick={() => onNavigateTab('stores')}
-                      className="font-bold text-[#7C3AED] dark:text-purple-400 hover:underline cursor-pointer"
-                    >
-                      Compare stores →
-                    </button>
-                  </div>
-                </section>
-              )}
-            </div>
-          )}
-
-          {/* ========================================================================= */}
-          {/* ROW 3: ONE SMART INSIGHT (Sleek, warm peach banner card)                  */}
-          {/* ========================================================================= */}
-          {showSmartInsight && (
-            <section className="bg-gradient-to-r from-[#FFF6ED] via-[#FFF9F2] to-[#FFF0E1] dark:from-[#131A2B] dark:via-amber-950/20 dark:to-[#131A2B] border border-[#FDBA74]/60 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 min-w-0">
-              <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
-                <div className="w-9 h-9 rounded-xl bg-[#FFF0E1] dark:bg-amber-950/60 text-[#EA580C] dark:text-amber-400 border border-[#FDBA74]/40 flex items-center justify-center shrink-0 shadow-2xs">
-                  <Lightbulb className="w-4 h-4" />
+          {/* Arrange Mode Active Banner */}
+          {isArrangeMode && (
+            <div className="p-3 sm:p-4 rounded-2xl bg-[#F3EEFF] dark:bg-purple-950/50 border border-[#8B5CF6]/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn shadow-xs">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-[#8B5CF6] text-white flex items-center justify-center shrink-0">
+                  <GripVertical className="w-4 h-4" />
                 </div>
-                <div className="min-w-0 space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-[#C2410C] dark:text-amber-400 uppercase font-bold tracking-wider">
-                      {currentInsight.badge}
-                    </span>
-                    <span className="text-[10px] text-[#625B72] dark:text-slate-400 font-semibold">
-                      · Showing {currentInsightIndex + 1} of {smartInsights.length}
-                    </span>
-                  </div>
-                  <p className="text-xs sm:text-sm font-bold text-[#29243A] dark:text-slate-100 leading-snug">
-                    "{currentInsight.message}"
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-[#4C267B] dark:text-purple-200">
+                    Dashboard Drag & Rearrange Mode
+                  </h4>
+                  <p className="text-[11px] text-[#625B72] dark:text-slate-300">
+                    Drag widgets directly by their top handles or click arrow buttons to rearrange them.
                   </p>
                 </div>
               </div>
-
-              <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
-                <span className="text-[11px] text-[#7C3AED] dark:text-purple-400 font-bold hidden md:inline">
-                  ✦ {currentInsight.highlight}
-                </span>
+              <div className="flex items-center gap-2 shrink-0">
                 <button
-                  onClick={handleNextInsight}
-                  aria-label="Next insight"
-                  className="inline-flex items-center gap-1.5 text-xs font-bold text-[#7C3AED] dark:text-purple-400 hover:text-[#4C267B] dark:hover:text-purple-300 cursor-pointer px-3 py-1.5 rounded-xl bg-white dark:bg-purple-950/40 hover:bg-[#F3EEFF] border border-[#E5DDF2] dark:border-transparent transition-colors shadow-2xs"
+                  onClick={handleResetDashboardCards}
+                  className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-[#E5DDF2] dark:border-slate-700 text-xs font-semibold text-[#625B72] dark:text-slate-300 hover:bg-[#F8F5FD] cursor-pointer"
                 >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>Next Insight</span>
+                  Reset Layout
+                </button>
+                <button
+                  onClick={() => setIsArrangeMode(false)}
+                  className="px-3.5 py-1.5 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] text-white text-xs font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Done Arranging</span>
                 </button>
               </div>
-            </section>
+            </div>
           )}
+
+          {/* Dynamic Grid of Visible Widgets Sorted by User Order */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch w-full min-w-0">
+            {sortedVisibleCards.map((card, index) => {
+              const isFullWidth =
+                card.id === 'quick_actions' ||
+                card.id === 'recently_viewed' ||
+                card.id === 'budget_progress' ||
+                card.id === 'smart_insight';
+
+              return (
+                <div
+                  key={card.id}
+                  draggable={isArrangeMode}
+                  onDragStart={(e) => handleDashboardDragStart(e, card.id)}
+                  onDragOver={(e) => handleDashboardDragOver(e, card.id)}
+                  onDragLeave={handleDashboardDragLeave}
+                  onDrop={(e) => handleDashboardDrop(e, card.id)}
+                  onDragEnd={handleDashboardDragEnd}
+                  className={`transition-all duration-200 min-w-0 flex flex-col ${
+                    isFullWidth ? 'col-span-1 lg:col-span-2' : 'col-span-1'
+                  } ${
+                    draggedDashboardCardId === card.id ? 'opacity-40 scale-[0.98]' : ''
+                  } ${
+                    dragOverDashboardCardId === card.id
+                      ? 'ring-2 ring-[#8B5CF6] ring-offset-2 ring-offset-[#FFF9F2] dark:ring-offset-[#0B0F19] rounded-2xl'
+                      : ''
+                  }`}
+                >
+                  {/* Arrange Toolbar (Shown when Arrange Mode is Active) */}
+                  {isArrangeMode && (
+                    <div className="flex items-center justify-between px-3 py-1.5 mb-2 rounded-xl bg-[#F3EEFF] dark:bg-purple-950/70 border border-[#E5DDF2] dark:border-purple-800/60 text-xs font-bold text-[#4C267B] dark:text-purple-300 shadow-2xs">
+                      <div className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing">
+                        <GripVertical className="w-4 h-4 text-[#8B5CF6]" />
+                        <span>{card.title}</span>
+                        <span className="text-[10px] font-normal text-[#625B72] dark:text-slate-400 hidden sm:inline">
+                          · Drag to reorder
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleMoveCard(card.id, 'up')}
+                          disabled={index === 0}
+                          className="p-1 rounded-lg hover:bg-white dark:hover:bg-slate-800 text-[#625B72] hover:text-[#1E1B2E] dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                          title="Move up"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleMoveCard(card.id, 'down')}
+                          disabled={index === sortedVisibleCards.length - 1}
+                          className="p-1 rounded-lg hover:bg-white dark:hover:bg-slate-800 text-[#625B72] hover:text-[#1E1B2E] dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                          title="Move down"
+                        >
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleToggleCardVisibility(card.id)}
+                          className="p-1 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-950 text-rose-500 hover:text-rose-700 cursor-pointer transition-colors"
+                          title="Hide this widget"
+                        >
+                          <EyeOff className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Widget Content */}
+                  <div className="flex-1 flex flex-col min-w-0">
+                    {renderWidgetContent(card.id)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
